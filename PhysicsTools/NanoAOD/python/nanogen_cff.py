@@ -5,7 +5,7 @@ from PhysicsTools.NanoAOD.met_cff import metMCTable
 from PhysicsTools.NanoAOD.genparticles_cff import *
 from PhysicsTools.NanoAOD.particlelevel_cff import *
 from PhysicsTools.NanoAOD.lheInfoTable_cfi import *
-from PhysicsTools.NanoAOD.genWeightsTable_cfi import *
+from PhysicsTools.NanoAOD.genWeightsTable_cff import *
 from PhysicsTools.NanoAOD.genVertex_cff import *
 from PhysicsTools.NanoAOD.common_cff import Var,CandVars
 from PhysicsTools.NanoAOD.nano_eras_cff import *
@@ -42,7 +42,7 @@ def nanoGenCommonCustomize(process):
     process.rivetMetTable.extension = False
     process.lheInfoTable.storeLHEParticles = True
     process.lheInfoTable.precision = 14
-    process.genWeightsTable.keepAllPSWeights = True
+    #process.genWeightsTable.keepAllPSWeights = True
     process.genJetFlavourAssociation.jets = process.genJetTable.src
     process.genJetFlavourTable.src = process.genJetTable.src
     process.genJetAK8FlavourAssociation.jets = process.genJetAK8Table.src
