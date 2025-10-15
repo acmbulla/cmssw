@@ -511,42 +511,72 @@ public:
                        std::vector<double>& wPS,
                        std::string& psWeightDocStr) const {
     wPS.clear();
-    // isRegularPSSet = keeping all weights and the weights are a usual size, ie
-    //                  all weights are PS weights (don't use header incase missing names)
+
+    // --- Detect if this is a Sherpa sample ---
+    bool isSherpa = false;
+    if (!genWeightChoice->psWeightsDoc.empty()) {
+      std::string doc = genWeightChoice->psWeightsDoc;
+      if (doc.find("Sherpa") != std::string::npos || doc.find("MUR1_MUF1") != std::string::npos)
+        isSherpa = true;
+    }
+    if (!isSherpa && genWeights.size() > 100) isSherpa = true;
+
+    // --- Sherpa case: normalize to the first weight ---
+    if (isSherpa) {
+      if (genWeights.empty()) {
+        wPS.push_back(1.0);
+        psWeightDocStr = "dummy Sherpa PS weight (1.0)";
+        return;
+      }
+
+      double nominal = genWeights.at(0);
+      for (size_t i = 0; i < genWeights.size(); ++i) {
+        double ratio = (nominal != 0.0) ? genWeights.at(i) / nominal : 0.0;
+        wPS.push_back(ratio);
+      }
+
+      std::ostringstream doc;
+      doc << "Sherpa PSWeight structure (w_var / w_nominal):\n"
+          << "  [0] nominal (MUR1_MUF1_PDF261000)\n"
+          << "  [1–6] QCD scale variations (muR/muF)\n"
+          << "  [7–N] PDF variations\n"
+          << "  Total = " << genWeights.size();
+      psWeightDocStr = doc.str();
+      return;
+    }
+
+    // --- Default behaviour for other generators ---
     bool isRegularPSSet = keepAllPSWeights_ && (genWeights.size() == 14 || genWeights.size() == 46);
     if (!genWeightChoice->psWeightIDs.empty() && !isRegularPSSet) {
       psWeightDocStr = genWeightChoice->psWeightsDoc;
       double psNom = genWeights.at(genWeightChoice->psBaselineID);
       for (auto wgtidx : genWeightChoice->psWeightIDs) {
-        wPS.push_back(genWeights.at(wgtidx) / psNom);
+        double ratio = (psNom != 0.0) ? genWeights.at(wgtidx) / psNom : 0.0;
+        wPS.push_back(ratio);
       }
     } else {
-      int vectorSize =
-          keepAllPSWeights_ ? (genWeights.size() - 2) : ((genWeights.size() == 14 || genWeights.size() == 46) ? 4 : 1);
-
-      if (vectorSize > 1) {
-        double nominal = genWeights.at(1);  // Called 'Baseline' in GenLumiInfoHeader
+      int vectorSize = keepAllPSWeights_ ? (genWeights.size() > 2 ? (int)genWeights.size() - 2 : 1)
+                                         : ((genWeights.size() == 14 || genWeights.size() == 46) ? 4 : 1);
+      if (vectorSize > 1 && genWeights.size() > 1) {
+        double nominal = genWeights.at(1);
         if (keepAllPSWeights_) {
-          for (int i = 0; i < vectorSize; i++) {
-            wPS.push_back(genWeights.at(i + 2) / nominal);
+          for (int i = 0; i < vectorSize; ++i) {
+            double ratio = (nominal != 0.0) ? genWeights.at(i + 2) / nominal : 0.0;
+            wPS.push_back(ratio);
           }
           psWeightDocStr = "All PS weights (w_var / w_nominal)";
         } else {
           if (!psWeightWarning_.exchange(true))
-            edm::LogWarning("LHETablesProducer")
-                << "GenLumiInfoHeader not found: Central PartonShower weights will fill with the 6-10th entries \n"
-                << "    This may incorrect for some mcs (madgraph 2.6.1 with its `isr:murfact=0.5` have a differnt "
-                   "order )";
-          for (std::size_t i = 6; i < 10; i++) {
-            wPS.push_back(genWeights.at(i) / nominal);
+            edm::LogWarning("LHETablesProducer") << "GenLumiInfoHeader not found: using indices 6–9 for PS weights";
+          for (std::size_t i = 6; i < 10 && i < genWeights.size(); ++i) {
+            double ratio = (nominal != 0.0) ? genWeights.at(i) / nominal : 0.0;
+            wPS.push_back(ratio);
           }
-          psWeightDocStr =
-              "PS weights (w_var / w_nominal);   [0] is ISR=2 FSR=1; [1] is ISR=1 FSR=2"
-              "[2] is ISR=0.5 FSR=1; [3] is ISR=1 FSR=0.5;";
+          psWeightDocStr = "PS weights (w_var / w_nominal)";
         }
       } else {
         wPS.push_back(1.0);
-        psWeightDocStr = "dummy PS weight (1.0) ";
+        psWeightDocStr = "dummy PS weight (1.0)";
       }
     }
   }
