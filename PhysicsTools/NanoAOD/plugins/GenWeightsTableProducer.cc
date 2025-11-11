@@ -190,6 +190,7 @@ namespace {
     std::vector<unsigned int> psWeightIDs;
     unsigned int psBaselineID = 1;
     std::string psWeightsDoc;
+    bool isSherpa = false; 
 
     void setMissingWeight(int idx) { psWeightIDs[idx] = (matchPS_alt) ? defPSWeightIDs_alt[idx] : defPSWeightIDs[idx]; }
 
@@ -322,6 +323,7 @@ public:
     }
 
     const auto genWeightChoice = luminosityBlockCache(iEvent.getLuminosityBlock().index());
+    bool isSherpa = genWeightChoice && genWeightChoice->isSherpa;
     if (lheInfo.isValid()) {
       if (getLHEweightsFromGenInfo && !hasIssuedWarning_.exchange(true))
         edm::LogWarning("LHETablesProducer")
@@ -340,7 +342,7 @@ public:
                           lheRwgtTab,
                           lheNamedTab,
                           genPSTab);
-    } else if (getLHEweightsFromGenInfo) {
+    } else if (getLHEweightsFromGenInfo || isSherpa ) {
       fillLHEPdfWeightTablesFromGenInfo(
           counter, genWeightChoice, weight, *genInfo, lheScaleTab, lhePdfTab, lheNamedTab, genPSTab);
       lheRwgtTab = std::make_unique<nanoaod::FlatTable>(1, "LHEReweightingWeights", true);
@@ -449,8 +451,21 @@ public:
     const std::vector<unsigned int>& pdfWeightIDs = weightChoice->pdfWeightIDs;
 
     auto weights = genProd.weights();
-    double w0 = (weights.size() > 1) ? weights.at(1) : 1.;
-    double originalXWGTUP = (weights.size() > 1) ? weights.at(1) : 1.;
+    const bool isSherpa = weightChoice->isSherpa;
+    double w0 = 1.0;
+    double originalXWGTUP = 1.0;
+
+    if (weights.size() > 1) {
+      if (isSherpa) {
+        // Sherpa uses weight[0] as nominal
+        w0 = weights[0];
+        originalXWGTUP = weights[0];
+      } else {
+        // Standard: weight[1] is nominal
+        w0 = weights[1];
+        originalXWGTUP = weights[1];
+      }
+    }
 
     std::vector<double> wScale, wPDF, wPS;
     for (auto id : scaleWeightIDs)
@@ -514,7 +529,7 @@ public:
           keepAllPSWeights_ ? (genWeights.size() - 2) : ((genWeights.size() == 14 || genWeights.size() == 46) ? 4 : 1);
 
       if (vectorSize > 1) {
-        double nominal = genWeights.at(1);  // Called 'Baseline' in GenLumiInfoHeader
+        double nominal = genWeights.at(genWeightChoice->psBaselineID);  // Called 'Baseline' in GenLumiInfoHeader
         if (keepAllPSWeights_) {
           for (int i = 0; i < vectorSize; i++) {
             wPS.push_back(genWeights.at(i + 2) / nominal);
@@ -995,101 +1010,208 @@ public:
       std::smatch groups;
       auto weightNames = genLumiInfoHead->weightNames();
       std::unordered_map<std::string, uint32_t> knownPDFSetsFromGenInfo_;
-      unsigned int weightIter = 0;
-      for (const auto& line : weightNames) {
-        if (std::regex_search(line, groups, scalew)) {  // scale variation
-          auto id = groups.str(1);
-          auto group = groups.str(2);
-          auto mur = groups.str(3);
-          auto muf = groups.str(4);
-          if (group.find("Central scale variation") != std::string::npos)
-            scaleVariationIDs.emplace_back(groups.str(1), groups.str(2), groups.str(3), groups.str(4));
-        } else if (std::regex_search(line, groups, pdfw)) {  // PDF variation
-          auto id = groups.str(1);
-          auto group = groups.str(2);
-          auto memberid = groups.str(3);
-          auto pdfset = groups.str(4);
-          if (group.find(pdfset) != std::string::npos) {
-            if (knownPDFSetsFromGenInfo_.find(pdfset) == knownPDFSetsFromGenInfo_.end()) {
-              knownPDFSetsFromGenInfo_[pdfset] = std::atoi(id.c_str());
-              pdfSetWeightIDs.emplace_back(id, std::atoi(id.c_str()));
-            } else
-              pdfSetWeightIDs.back().add(id, std::atoi(id.c_str()));
-          }
-        } else if (line == "Baseline") {
-          weightChoice->psBaselineID = weightIter;
-        } else if (line.find("isr") != std::string::npos || line.find("fsr") != std::string::npos) {
-          weightChoice->matchPS_alt = line.find("sr:") != std::string::npos ||
-                                      line.find("sr.") != std::string::npos;  // (f/i)sr: for new weights
-          if (keepAllPSWeights_) {
-            weightChoice->psWeightIDs.push_back(weightIter);  // PS variations
-          } else if (std::regex_search(line, groups, mainPSw)) {
-            if (weightChoice->psWeightIDs.empty())
-              weightChoice->psWeightIDs = std::vector<unsigned int>(4, -1);
-            int psIdx = (line.find("fsr") != std::string::npos) ? 1 : 0;
-            psIdx += (groups.str(2) == "Hi" || groups.str(2) == "_up" || groups.str(2) == "2.0") ? 0 : 2;
-            weightChoice->psWeightIDs[psIdx] = weightIter;
-          }
-        }
-        weightIter++;
-      }
-      if (keepAllPSWeights_) {
-        weightChoice->psWeightsDoc = "All PS weights (w_var / w_nominal) ";
-      } else if (weightChoice->psWeightIDs.size() == 4) {
-        weightChoice->psWeightsDoc = "PS weights (w_var / w_nominal) ";
-        for (int i = 0; i < 4; i++) {
-          if (static_cast<int>(weightChoice->psWeightIDs[i]) == -1)
-            weightChoice->setMissingWeight(i);
-        }
-      } else {
-        weightChoice->psWeightsDoc = "dummy PS weight (1.0) ";
-      }
-      for (unsigned i = 0; i < weightChoice->psWeightIDs.size(); ++i) {
-        weightChoice->psWeightsDoc +=
-            "[" + std::to_string(i) + "] " + weightNames.at(weightChoice->psWeightIDs.at(i)) + "; ";
-      }
 
-      weightChoice->scaleWeightIDs.clear();
-      weightChoice->pdfWeightIDs.clear();
+      // --- Detect Sherpa from the first 4 weights ---
+      auto contains = [&](const std::string& key) {
+        return std::any_of(weightNames.begin(), weightNames.end(),
+                          [&](const std::string& s) { return s.find(key) != std::string::npos; });
+      };
 
-      std::sort(scaleVariationIDs.begin(), scaleVariationIDs.end());
-      std::stringstream scaleDoc;
-      scaleDoc << "LHE scale variation weights (w_var / w_nominal); ";
-      for (unsigned int isw = 0, nsw = scaleVariationIDs.size(); isw < nsw; ++isw) {
-        const auto& sw = scaleVariationIDs[isw];
-        if (isw)
-          scaleDoc << "; ";
-        scaleDoc << "[" << isw << "] is " << sw.label;
-        weightChoice->scaleWeightIDs.push_back(std::atoi(sw.wid.c_str()));
-      }
-      if (!scaleVariationIDs.empty())
+      bool Sherpa = weightNames.size() >= 4 &&
+                    contains("Weight") &&
+                    contains("MEWeight") &&
+                    contains("WeightNormalisation") &&
+                    contains("NTrials");
+
+      if (Sherpa) {
+        edm::LogInfo("SherpaDetection")
+            << "Detected Sherpa structure in GenLumiInfoHeader with " << weightNames.size()
+            << " weights (matched Weight/MEWeight/WeightNormalisation/NTrials).";
+
+        weightChoice->isSherpa = true;
+        weightChoice->psBaselineID = 0;  // Nominal weight is always the first one
+        edm::LogInfo("SherpaDetection") << "Detected Sherpa structure in GenLumiInfoHeader with "
+                                        << weightNames.size() << " weights.";
+
+        unsigned int idx = 0;
+        for (const auto& line : weightNames) {
+
+          // --- Sherpa PDF variations (MUR1_MUF1_PDFxxxxx) ---
+          if (line.find("MUR1_MUF1_PDF") != std::string::npos) {
+            std::smatch groups;
+            std::regex sherpaPdf("MUR1_MUF1_PDF(\\d+)");
+            if (std::regex_match(line, groups, sherpaPdf)) {
+              uint32_t lhaid = std::stoul(groups.str(1));
+              if (knownPDFSetsFromGenInfo_.find("NNPDF") == knownPDFSetsFromGenInfo_.end()) {
+                knownPDFSetsFromGenInfo_["NNPDF"] = lhaid;
+                pdfSetWeightIDs.emplace_back(std::to_string(idx), lhaid);
+              } else {
+                pdfSetWeightIDs.back().add(std::to_string(idx), lhaid);
+              }
+            }
+          }
+
+          // --- Sherpa QCD scale variations (MURx_MUFy_PDFz) ---
+          else if (line.find("MUR") != std::string::npos && line.find("MUF") != std::string::npos) {
+            std::smatch m;
+            std::regex sherpaScale("MUR([0-9\\.]+)_MUF([0-9\\.]+)_PDF(\\d+)");
+            if (std::regex_match(line, m, sherpaScale)) {
+              std::string mur = m.str(1);
+              std::string muf = m.str(2);
+              scaleVariationIDs.emplace_back(std::to_string(idx), line, mur, muf);
+            }
+          }
+
+          idx++;
+        }
+
+        // --- Mark used indices (scale + PDF) ---
+        std::vector<unsigned int> usedIndices;
+        for (const auto& s : scaleVariationIDs)
+          usedIndices.push_back(std::stoul(s.wid));
+        for (const auto& p : pdfSetWeightIDs)
+          for (const auto& wid : p.wids)
+            usedIndices.push_back(std::stoul(wid));
+
+        // --- Fill PSWeight with everything else (non-scale/non-PDF) ---
+        for (unsigned int i = 0; i < weightNames.size(); ++i) {
+          if (std::find(usedIndices.begin(), usedIndices.end(), i) == usedIndices.end())
+            weightChoice->psWeightIDs.push_back(i);
+        }
+
+        // --- Transfer scale and PDF indices to weightChoice ---
+        std::sort(scaleVariationIDs.begin(), scaleVariationIDs.end());
+        for (const auto& s : scaleVariationIDs)
+          weightChoice->scaleWeightIDs.push_back(std::stoul(s.wid));
+        for (const auto& p : pdfSetWeightIDs)
+          for (const auto& wid : p.wids)
+            weightChoice->pdfWeightIDs.push_back(std::stoul(wid));
+
+        // --- Documentation strings ---
+        std::stringstream scaleDoc;
+        scaleDoc << "[Sherpa detected]. QCD scale variations (w_var / w_nominal); total=" << scaleVariationIDs.size();
         weightChoice->scaleWeightsDoc = scaleDoc.str();
-      std::stringstream pdfDoc;
-      pdfDoc << "LHE pdf variation weights (w_var / w_nominal) for LHA names ";
-      bool found = false;
-      for (const auto& pw : pdfSetWeightIDs) {
-        if (pw.wids.size() == 1)
-          continue;  // only consider error sets
-        for (const auto& wantedpdf : lhaNameToID_) {
-          auto pdfname = wantedpdf.first;
-          if (knownPDFSetsFromGenInfo_.find(pdfname) == knownPDFSetsFromGenInfo_.end())
-            continue;
-          uint32_t lhaid = knownPDFSetsFromGenInfo_.at(pdfname);
-          if (pw.lhaIDs.first != lhaid)
-            continue;
-          pdfDoc << pdfname;
-          for (const auto& x : pw.wids)
-            weightChoice->pdfWeightIDs.push_back(std::atoi(x.c_str()));
-          if (maxPdfWeights_ < pw.wids.size()) {
-            weightChoice->pdfWeightIDs.resize(maxPdfWeights_);  // drop some replicas
-            pdfDoc << ", truncated to the first " << maxPdfWeights_ << " replicas";
+
+        std::stringstream pdfDoc;
+        pdfDoc << "[Sherpa detected]. PDF replicas (NNPDF, w_var / w_nominal); total=" << weightChoice->pdfWeightIDs.size();
+        weightChoice->pdfWeightsDoc = pdfDoc.str();
+
+        std::ostringstream psdoc;
+        psdoc << "[Sherpa detected].\n"
+              << "  [0–3] internal (Weight, MEWeight, WeightNormalisation, NTrials)\n"
+              << "  [4+] HEPMC_EXTENDED_WEIGHTS = 1\n"
+              << "  Count=" << weightChoice->psWeightIDs.size();
+        weightChoice->psWeightsDoc = psdoc.str();
+
+        // --- Debug summary (optional) ---
+        std::ostringstream dbg;
+        dbg << "\n[WeightChoice summary - Sherpa] ---------------------\n";
+        dbg << "  scaleWeightIDs: " << weightChoice->scaleWeightIDs.size()
+            << " | pdfWeightIDs: " << weightChoice->pdfWeightIDs.size()
+            << " | psWeightIDs: " << weightChoice->psWeightIDs.size() << "\n";
+        dbg << "------------------------------------------------------";
+        edm::LogInfo("LHETablesProducer") << dbg.str();
+      }
+
+      // --- Non-Sherpa processing ---
+      else {
+
+        unsigned int weightIter = 0;
+        for (const auto& line : weightNames) {
+          if (std::regex_search(line, groups, scalew)) {  // scale variation
+            auto id = groups.str(1);
+            auto group = groups.str(2);
+            auto mur = groups.str(3);
+            auto muf = groups.str(4);
+            if (group.find("Central scale variation") != std::string::npos)
+              scaleVariationIDs.emplace_back(groups.str(1), groups.str(2), groups.str(3), groups.str(4));
+          } else if (std::regex_search(line, groups, pdfw)) {  // PDF variation
+            auto id = groups.str(1);
+            auto group = groups.str(2);
+            auto memberid = groups.str(3);
+            auto pdfset = groups.str(4);
+            if (group.find(pdfset) != std::string::npos) {
+              if (knownPDFSetsFromGenInfo_.find(pdfset) == knownPDFSetsFromGenInfo_.end()) {
+                knownPDFSetsFromGenInfo_[pdfset] = std::atoi(id.c_str());
+                pdfSetWeightIDs.emplace_back(id, std::atoi(id.c_str()));
+              } else
+                pdfSetWeightIDs.back().add(id, std::atoi(id.c_str()));
+            }
+          } else if (line == "Baseline") {
+            weightChoice->psBaselineID = weightIter;
+          } else if (line.find("isr") != std::string::npos || line.find("fsr") != std::string::npos) {
+            weightChoice->matchPS_alt = line.find("sr:") != std::string::npos ||
+                                        line.find("sr.") != std::string::npos;  // (f/i)sr: for new weights
+            if (keepAllPSWeights_) {
+              weightChoice->psWeightIDs.push_back(weightIter);  // PS variations
+            } else if (std::regex_search(line, groups, mainPSw)) {
+              if (weightChoice->psWeightIDs.empty())
+                weightChoice->psWeightIDs = std::vector<unsigned int>(4, -1);
+              int psIdx = (line.find("fsr") != std::string::npos) ? 1 : 0;
+              psIdx += (groups.str(2) == "Hi" || groups.str(2) == "_up" || groups.str(2) == "2.0") ? 0 : 2;
+              weightChoice->psWeightIDs[psIdx] = weightIter;
+            }
           }
-          weightChoice->pdfWeightsDoc = pdfDoc.str();
-          found = true;
-          break;
+          weightIter++;
         }
-        if (found)
-          break;
+        if (keepAllPSWeights_) {
+          weightChoice->psWeightsDoc = "All PS weights (w_var / w_nominal) ";
+        } else if (weightChoice->psWeightIDs.size() == 4) {
+          weightChoice->psWeightsDoc = "PS weights (w_var / w_nominal) ";
+          for (int i = 0; i < 4; i++) {
+            if (static_cast<int>(weightChoice->psWeightIDs[i]) == -1)
+              weightChoice->setMissingWeight(i);
+          }
+        } else {
+          weightChoice->psWeightsDoc = "dummy PS weight (1.0) ";
+        }
+        for (unsigned i = 0; i < weightChoice->psWeightIDs.size(); ++i) {
+          weightChoice->psWeightsDoc +=
+              "[" + std::to_string(i) + "] " + weightNames.at(weightChoice->psWeightIDs.at(i)) + "; ";
+        }
+
+        weightChoice->scaleWeightIDs.clear();
+        weightChoice->pdfWeightIDs.clear();
+
+        std::sort(scaleVariationIDs.begin(), scaleVariationIDs.end());
+        std::stringstream scaleDoc;
+        scaleDoc << "LHE scale variation weights (w_var / w_nominal); ";
+        for (unsigned int isw = 0, nsw = scaleVariationIDs.size(); isw < nsw; ++isw) {
+          const auto& sw = scaleVariationIDs[isw];
+          if (isw)
+            scaleDoc << "; ";
+          scaleDoc << "[" << isw << "] is " << sw.label;
+          weightChoice->scaleWeightIDs.push_back(std::atoi(sw.wid.c_str()));
+        }
+        if (!scaleVariationIDs.empty())
+          weightChoice->scaleWeightsDoc = scaleDoc.str();
+        std::stringstream pdfDoc;
+        pdfDoc << "LHE pdf variation weights (w_var / w_nominal) for LHA names ";
+        bool found = false;
+        for (const auto& pw : pdfSetWeightIDs) {
+          if (pw.wids.size() == 1)
+            continue;  // only consider error sets
+          for (const auto& wantedpdf : lhaNameToID_) {
+            auto pdfname = wantedpdf.first;
+            if (knownPDFSetsFromGenInfo_.find(pdfname) == knownPDFSetsFromGenInfo_.end())
+              continue;
+            uint32_t lhaid = knownPDFSetsFromGenInfo_.at(pdfname);
+            if (pw.lhaIDs.first != lhaid)
+              continue;
+            pdfDoc << pdfname;
+            for (const auto& x : pw.wids)
+              weightChoice->pdfWeightIDs.push_back(std::atoi(x.c_str()));
+            if (maxPdfWeights_ < pw.wids.size()) {
+              weightChoice->pdfWeightIDs.resize(maxPdfWeights_);  // drop some replicas
+              pdfDoc << ", truncated to the first " << maxPdfWeights_ << " replicas";
+            }
+            weightChoice->pdfWeightsDoc = pdfDoc.str();
+            found = true;
+            break;
+          }
+          if (found)
+            break;
+        }
       }
     }
     return dynamicWeightChoiceGenInfo;
